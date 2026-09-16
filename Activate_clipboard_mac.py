@@ -179,7 +179,7 @@ def ocr_image(img_array, use_gpu=False):
         # Tesseract configuration
         # --oem 1: Use LSTM engine (better for modern text)
         # --psm 6: Assume single uniform block of text
-        config = '--oem 1 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,!?;:\'"'
+        config = '--oem 1 --psm 6'
 
         text = pytesseract.image_to_string(pil_img, config=config)
 
