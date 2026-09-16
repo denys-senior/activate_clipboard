@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageGrab, ImageEnhance
 import pytesseract
+import subprocess
 
 # Environment setup for Intel Mac compatibility
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
@@ -18,8 +19,60 @@ os.environ['MKL_NUM_THREADS'] = '1'
 os.environ['NUMEXPR_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
 
+# Setup Tesseract path for macOS
+def setup_tesseract():
+    """Find and configure Tesseract for macOS"""
+    # Common Tesseract install locations on Intel Mac
+    tessdata_paths = [
+        '/usr/local/share/tessdata',          # Homebrew on Intel Mac
+        '/opt/local/share/tessdata',          # MacPorts
+        '/opt/homebrew/share/tessdata',       # Homebrew on Apple Silicon (fallback)
+        os.path.expanduser('~/.local/share/tessdata'),  # User install
+    ]
+
+    # Find first existing tessdata directory
+    for path in tessdata_paths:
+        if os.path.exists(path) and os.path.exists(os.path.join(path, 'eng.traineddata')):
+            os.environ['TESSDATA_PREFIX'] = path
+            print(f"[SETUP] Tesseract data found at: {path}")
+            return True
+
+    # If not found, try to get it from brew
+    try:
+        result = subprocess.run(['brew', '--prefix', 'tesseract'],
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            brew_prefix = result.stdout.strip()
+            brew_tessdata = os.path.join(brew_prefix, 'share', 'tessdata')
+            if os.path.exists(brew_tessdata):
+                os.environ['TESSDATA_PREFIX'] = brew_tessdata
+                print(f"[SETUP] Tesseract data found via brew at: {brew_tessdata}")
+                return True
+    except Exception as e:
+        print(f"[SETUP] Brew detection failed: {e}")
+
+    print("[SETUP] ERROR: Tesseract data not found!")
+    print("[SETUP] Please install Tesseract with: brew install tesseract")
+    return False
+
+# Initialize Tesseract before any OCR operations
+if not setup_tesseract():
+    sys.exit(1)
+
 # Global to store selected region
 selected_region = None
+
+
+def copy_to_clipboard(text):
+    """Copy text to macOS clipboard using pbcopy"""
+    try:
+        process = subprocess.Popen(['pbcopy'], stdin=subprocess.PIPE)
+        process.communicate(text.encode('utf-8'))
+        process.wait()
+        return True
+    except Exception as e:
+        print(f"[CLIPBOARD] Failed to copy: {e}")
+        return False
 
 
 def test_imagegrab():
@@ -185,12 +238,20 @@ def ocr_image(img_array, use_gpu=False):
 
         if text.strip():
             print(f"[OCR] Detected text: {text[:100]}")
+            # Auto-copy to clipboard
+            if copy_to_clipboard(text.strip()):
+                print("[CLIPBOARD] Text copied to clipboard")
         else:
             print("[OCR] No text detected (empty result)")
 
         return text.strip()
     except Exception as e:
-        print(f"[OCR] Error during OCR: {e}")
+        error_str = str(e)
+        if 'traineddata' in error_str or 'TESSDATA_PREFIX' in error_str:
+            print(f"[OCR] Tesseract data error: {e}")
+            print("[OCR] Fix: brew install tesseract")
+        else:
+            print(f"[OCR] Error during OCR: {e}")
         return ""
 
 
