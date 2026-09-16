@@ -1,274 +1,305 @@
 #!/usr/bin/env python3
+"""
+Clipboard OCR for macOS Intel
+Captures selected screen region and performs OCR
+"""
+
 import os
 import sys
+import time
+import cv2
+import numpy as np
+from PIL import Image, ImageGrab, ImageEnhance
+import pytesseract
 
-# Disable CPU optimizations
+# Environment setup for Intel Mac compatibility
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['MKL_NUM_THREADS'] = '1'
 os.environ['NUMEXPR_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
-os.environ['PYTHONHASHSEED'] = '0'
-os.environ['DYLD_LIBRARY_PATH'] = '/usr/local/lib'
 
-import time
-import cv2
-import numpy as np
-import pytesseract
-import pyperclip
-from PIL import Image, ImageGrab
-import platform
-import subprocess
+# Global to store selected region
+selected_region = None
 
-# Tesseract path
-import shutil
-tesseract_path = shutil.which("tesseract")
-if tesseract_path:
-    pytesseract.pytesseract.tesseract_cmd = tesseract_path
-else:
-    pytesseract.pytesseract.tesseract_cmd = "/usr/local/bin/tesseract"
-
-monitor = None
-running = True
-DEBUG = True
-
-def check_setup():
-    """Verify system setup."""
-    print(f"Python: {platform.python_version()} ({platform.machine()})")
-    try:
-        result = subprocess.run(["file", pytesseract.pytesseract.tesseract_cmd], 
-                              capture_output=True, text=True, timeout=5)
-        print(f"Tesseract: {result.stdout.strip()}")
-    except:
-        print("Tesseract: /usr/local/bin/tesseract")
 
 def test_imagegrab():
-    """Test if ImageGrab works."""
+    """Test PIL ImageGrab functionality"""
+    print("[TEST] Testing PIL ImageGrab...")
     try:
-        print("Testing ImageGrab...", end=" ")
         img = ImageGrab.grab()
-        print(f"OK ({img.width}x{img.height})")
+        print(f"[TEST] ImageGrab OK: {img.size}")
         return True
     except Exception as e:
-        print(f"FAILED: {e}")
+        print(f"[TEST] ImageGrab failed: {e}")
         return False
+
 
 def test_cv2():
-    """Test if cv2 works."""
+    """Test OpenCV functionality"""
+    print("[TEST] Testing OpenCV...")
     try:
-        print("Testing cv2...", end=" ")
-        img = np.zeros((100, 100, 3), dtype=np.uint8)
-        result = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        print("OK")
+        test_img = np.zeros((100, 100, 3), dtype=np.uint8)
+        cv2.cvtColor(test_img, cv2.COLOR_BGR2GRAY)
+        print("[TEST] OpenCV OK")
         return True
     except Exception as e:
-        print(f"FAILED: {e}")
+        print(f"[TEST] OpenCV failed: {e}")
         return False
 
-def manual_select_roi():
-    """Manual coordinate input for ROI."""
-    print("\n=== Manual ROI Selection ===")
-    print("Enter coordinates for the region to capture:")
-    try:
-        left = int(input("LEFT (x): "))
-        top = int(input("TOP (y): "))
-        width = int(input("WIDTH: "))
-        height = int(input("HEIGHT: "))
-        
-        if width <= 0 or height <= 0:
-            print("Width and height must be positive.")
-            return None
-        
-        return {"left": left, "top": top, "width": width, "height": height}
-    except ValueError:
-        print("Invalid input. Please enter numbers only.")
-        return None
 
-def select_roi_cv2():
-    """Use cv2.selectROI to select region."""
+def select_region_interactive():
+    """
+    Let user select screen region with cv2.selectROI
+    Falls back to manual coordinate input if selectROI fails
+    """
+    print("[SELECT] Capturing screenshot for region selection...")
     try:
-        print("\nCapturing screen...", end=" ")
-        img_pil = ImageGrab.grab()
-        print("OK")
-        
-        print("Converting to numpy...", end=" ")
-        img_array = np.array(img_pil)
-        print("OK")
-        
-        print("Converting RGB to BGR...", end=" ")
+        screenshot = ImageGrab.grab()
+        img_array = np.array(screenshot)
+        # Convert RGB to BGR for OpenCV
         img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-        print("OK")
-        
-        print("Opening selection window...")
-        print("Draw rectangle and press ENTER to confirm, ESC to cancel")
-        print("(Window may take a few seconds to appear)")
-        
-        # Set a timeout for selectROI
-        start_time = time.time()
-        timeout = 60  # 60 second timeout
-        
-        r = cv2.selectROI("Select region", img_bgr, showCrosshair=True, fromCenter=False)
-        cv2.destroyAllWindows()
-        
-        x, y, w, h = map(int, r)
-        if w == 0 or h == 0:
-            print("No region selected.")
-            return None
-        
-        return {"left": x, "top": y, "width": w, "height": h}
+
+        print("[SELECT] Opening region selection window...")
+        print("[SELECT] Drag to select region, press SPACE to confirm, ESC to cancel")
+
+        try:
+            roi = cv2.selectROI("Select Region", img_bgr, fromCenter=False, showCrosshair=True)
+            cv2.destroyAllWindows()
+
+            if roi[2] == 0 or roi[3] == 0:  # width or height is 0
+                print("[SELECT] Invalid selection (empty region)")
+                return get_manual_coordinates()
+
+            region = {
+                'left': int(roi[0]),
+                'top': int(roi[1]),
+                'width': int(roi[2]),
+                'height': int(roi[3])
+            }
+            print(f"[SELECT] Region selected: {region}")
+            return region
+        except Exception as e:
+            print(f"[SELECT] selectROI failed: {e}")
+            cv2.destroyAllWindows()
+            return get_manual_coordinates()
     except Exception as e:
-        print(f"ERROR: {type(e).__name__}: {e}")
-        print("cv2.selectROI failed. Falling back to manual input.")
+        print(f"[SELECT] Screenshot capture failed: {e}")
+        return get_manual_coordinates()
+
+
+def get_manual_coordinates():
+    """Get region coordinates manually from user"""
+    print("[SELECT] Falling back to manual coordinate input...")
+    try:
+        left = int(input("Enter left coordinate: "))
+        top = int(input("Enter top coordinate: "))
+        width = int(input("Enter width: "))
+        height = int(input("Enter height: "))
+
+        region = {
+            'left': left,
+            'top': top,
+            'width': width,
+            'height': height
+        }
+        print(f"[SELECT] Manual region: {region}")
+        return region
+    except Exception as e:
+        print(f"[SELECT] Manual input failed: {e}")
+        # Default region
+        return {'left': 100, 'top': 100, 'width': 800, 'height': 600}
+
+
+def preprocess(pil_img):
+    """
+    Preprocess image for OCR using adaptive thresholding
+    Improved version that preserves text contrast
+    """
+    # Convert to grayscale
+    gray_img = pil_img.convert('L')
+    gray_array = np.array(gray_img)
+
+    # Step 1: Enhance contrast to make text stand out
+    # Apply histogram equalization
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray_array)
+
+    # Step 2: Denoise
+    denoised = cv2.medianBlur(enhanced, 3)
+
+    # Step 3: Adaptive thresholding instead of fixed threshold
+    # This adjusts threshold locally, better for varying lighting conditions
+    binary = cv2.adaptiveThreshold(
+        denoised,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        11,  # Block size (must be odd)
+        2    # Constant subtracted from mean
+    )
+
+    # Step 4: Optional: Apply morphological operations to clean up
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    morph = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    print(f"[PREPROCESS] Input shape: {gray_array.shape}, Output shape: {morph.shape}")
+    print(f"[PREPROCESS] Pixel range: min={morph.min()}, max={morph.max()}, mean={morph.mean():.1f}")
+
+    return morph
+
+
+def capture_region(region):
+    """Capture the specified screen region"""
+    try:
+        box = (
+            region['left'],
+            region['top'],
+            region['left'] + region['width'],
+            region['top'] + region['height']
+        )
+        captured = ImageGrab.grab(bbox=box)
+        return captured
+    except Exception as e:
+        print(f"[CAPTURE] Failed to capture region: {e}")
         return None
 
-def select_roi():
-    """Select region - try cv2 first, fallback to manual."""
-    global monitor
-    
-    print("\n=== Region Selection ===")
-    
-    # Try cv2 first
-    m = select_roi_cv2()
-    
-    # If cv2 fails, use manual input
-    if not m:
-        print("\nTrying manual coordinate input instead...")
-        m = manual_select_roi()
-    
-    if not m:
-        if monitor:
-            print("Using previous region.")
-            return True
-        print("No region selected.")
-        return False
-    
-    monitor = m
-    print(f"\nSelected: {monitor}")
-    return True
 
-def grab_region(rect):
-    """Grab region from screen."""
+def ocr_image(img_array, use_gpu=False):
+    """
+    Perform OCR on image using Tesseract
+    Improved configuration for better text detection
+    """
     try:
-        bbox = (rect["left"], rect["top"], 
-                rect["left"] + rect["width"], 
-                rect["top"] + rect["height"])
-        img = ImageGrab.grab(bbox=bbox)
-        return np.array(img)
-    except Exception as e:
-        return None
-
-def preprocess(img_array):
-    """Convert image to grayscale and threshold."""
-    try:
-        if img_array is None or img_array.size == 0:
-            return None
-        
-        if len(img_array.shape) == 3 and img_array.shape[2] == 3:
-            pil_img = Image.fromarray(img_array, mode='RGB')
-        else:
+        # Convert numpy array to PIL Image if needed
+        if isinstance(img_array, np.ndarray):
             pil_img = Image.fromarray(img_array)
-        
-        pil_gray = pil_img.convert('L')
-        pil_bw = pil_gray.point(lambda x: 255 if x > 127 else 0, '1')
-        return np.array(pil_bw)
+        else:
+            pil_img = img_array
+
+        # Tesseract configuration
+        # --oem 1: Use LSTM engine (better for modern text)
+        # --psm 6: Assume single uniform block of text
+        config = '--oem 1 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,!?;:\'"'
+
+        text = pytesseract.image_to_string(pil_img, config=config)
+
+        if text.strip():
+            print(f"[OCR] Detected text: {text[:100]}")
+        else:
+            print("[OCR] No text detected (empty result)")
+
+        return text.strip()
     except Exception as e:
-        return None
-
-def normalize_text(t):
-    """Clean up text."""
-    try:
-        t = t.replace('\x0c', ' ').strip()
-        return ' '.join(t.split())
-    except:
+        print(f"[OCR] Error during OCR: {e}")
         return ""
 
-def ocr_image(img):
-    """Run OCR."""
-    if img is None:
-        return ""
+
+def show_debug_image(region_img, preprocessed_img):
+    """
+    Display original and preprocessed images side-by-side for debugging
+    """
     try:
-        config = "--oem 3 --psm 6 -l eng"
-        result = pytesseract.image_to_string(img, config=config, timeout=3)
-        return result if result else ""
-    except pytesseract.TesseractNotFoundError:
-        print("ERROR: Tesseract not found. Install: brew install tesseract")
-        return ""
-    except:
-        return ""
+        # Convert to display format
+        if isinstance(region_img, Image.Image):
+            orig_array = np.array(region_img)
+            if len(orig_array.shape) == 3 and orig_array.shape[2] == 3:
+                orig_bgr = cv2.cvtColor(orig_array, cv2.COLOR_RGB2BGR)
+            else:
+                orig_bgr = orig_array
+        else:
+            orig_bgr = region_img
+
+        # Resize to fit side-by-side
+        height = 400
+        aspect_orig = orig_bgr.shape[1] / orig_bgr.shape[0]
+        width_orig = int(height * aspect_orig)
+        orig_resized = cv2.resize(orig_bgr, (width_orig, height))
+
+        # Resize preprocessed image
+        preproc_resized = cv2.resize(preprocessed_img, (width_orig, height))
+        preproc_color = cv2.cvtColor(preproc_resized, cv2.COLOR_GRAY2BGR)
+
+        # Combine side-by-side
+        combined = np.hstack([orig_resized, preproc_color])
+
+        # Add labels
+        cv2.putText(combined, "Original", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(combined, "Preprocessed", (width_orig + 20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+        cv2.imshow("Debug: Original vs Preprocessed", combined)
+        print("[DEBUG] Showing debug image (press any key to continue)")
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+    except Exception as e:
+        print(f"[DEBUG] Failed to show debug image: {e}")
+
 
 def main():
-    """Main OCR loop."""
-    global running
-    
-    print("\n=== Clipboard OCR ===\n")
-    check_setup()
-    
-    print("\n=== Testing Components ===")
+    """Main OCR loop"""
+    print("=" * 60)
+    print("macOS Intel Clipboard OCR")
+    print("=" * 60)
+
+    # Run tests
     if not test_imagegrab():
-        print("Cannot capture screen. Exiting.")
-        return
-    
+        print("[ERROR] ImageGrab test failed")
+        sys.exit(1)
+
     if not test_cv2():
-        print("cv2 is broken. Exiting.")
-        return
-    
-    if not select_roi():
-        print("Exiting.")
-        return
+        print("[ERROR] OpenCV test failed")
+        sys.exit(1)
 
-    last_copied = ""
-    frame_count = 0
-    error_count = 0
+    # Select region
+    print("\n[MAIN] Starting region selection...")
+    region = select_region_interactive()
 
-    print("\nRunning OCR...")
-    print("Press Ctrl+C to stop\n")
+    print("\n[MAIN] Starting OCR loop...")
+    print("[MAIN] Press Ctrl+C to stop")
+
+    first_iteration = True
+    consecutive_empty = 0
+    max_empty_frames = 5  # Show debug after 5 empty frames
 
     try:
-        while running:
-            try:
-                frame = grab_region(monitor)
-                if frame is None or frame.size == 0:
-                    error_count += 1
-                    time.sleep(0.5)
-                    continue
-                
-                proc = preprocess(frame)
-                if proc is None:
-                    error_count += 1
-                    if error_count > 20:
-                        print("Too many errors. Reselecting...")
-                        select_roi()
-                        error_count = 0
-                    time.sleep(0.5)
-                    continue
-                
-                text = normalize_text(ocr_image(proc))
-                error_count = 0
-                frame_count += 1
-                
-                if DEBUG and frame_count % 20 == 0:
-                    print(f"[{frame_count}] {'Text: ' + text if text else 'No text'}")
-                
-                if text and text != last_copied:
-                    try:
-                        pyperclip.copy(text)
-                        last_copied = text
-                        print(f"[COPIED] {text}")
-                    except:
-                        pass
-                
-                time.sleep(0.2)
-                
-            except Exception as e:
-                error_count += 1
-                if error_count > 20:
-                    print("Too many errors. Stopping.")
-                    break
-                time.sleep(0.5)
-    
-    except KeyboardInterrupt:
-        print("\n\nStopped.")
-    finally:
-        print("Done.")
+        while True:
+            # Capture region
+            region_img = capture_region(region)
+            if region_img is None:
+                print("[MAIN] Failed to capture region, retrying...")
+                time.sleep(1)
+                continue
 
-if __name__ == "__main__":
+            # Preprocess
+            preprocessed = preprocess(region_img)
+
+            # Perform OCR
+            text = ocr_image(preprocessed)
+
+            # Track empty detections
+            if not text:
+                consecutive_empty += 1
+
+                # Show debug image after several empty frames to help diagnose
+                if consecutive_empty == max_empty_frames and first_iteration:
+                    print(f"\n[DEBUG] Showing preprocessing output (frame #{consecutive_empty})...")
+                    show_debug_image(region_img, preprocessed)
+                    first_iteration = False
+            else:
+                consecutive_empty = 0
+                first_iteration = False
+
+            # Print timestamp
+            timestamp = time.strftime("%H:%M:%S")
+            print(f"[{timestamp}] Frame processed - Text: {'(empty)' if not text else 'FOUND'}")
+
+            # Small delay to avoid CPU spinning
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        print("\n[MAIN] Stopping OCR...")
+        cv2.destroyAllWindows()
+        print("[MAIN] Done")
+
+
+if __name__ == '__main__':
     main()
