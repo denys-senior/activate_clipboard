@@ -2,7 +2,7 @@
 import os
 import sys
 
-# Set these BEFORE importing numpy/cv2 to prevent illegal instruction crashes
+# Disable CPU optimizations
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['MKL_NUM_THREADS'] = '1'
 os.environ['NUMEXPR_NUM_THREADS'] = '1'
@@ -18,7 +18,6 @@ import pyperclip
 from PIL import Image, ImageGrab
 import platform
 import subprocess
-from pynput import keyboard
 
 # Tesseract path
 import shutil
@@ -28,13 +27,6 @@ if tesseract_path:
 else:
     pytesseract.pytesseract.tesseract_cmd = "/usr/local/bin/tesseract"
 
-# Hotkeys
-HOTKEY_RESELECT = {keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode.from_char('r')}
-HOTKEY_QUIT     = {keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode.from_char('q')}
-HOTKEY_ENABLE   = {keyboard.Key.cmd, keyboard.Key.f9}
-HOTKEY_DISABLE  = {keyboard.Key.cmd, keyboard.Key.f10}
-
-pressed = set()
 monitor = None
 running = True
 DEBUG = True
@@ -137,39 +129,8 @@ def reselect():
     except:
         return bool(monitor)
 
-def on_press(key):
-    """Handle key press."""
-    global Flag, running
-    try:
-        pressed.add(key)
-        
-        if HOTKEY_RESELECT.issubset(pressed):
-            print("\n[Reselect]")
-            reselect()
-        
-        if HOTKEY_QUIT.issubset(pressed):
-            print("\n[Quit]")
-            running = False
-        
-        if HOTKEY_ENABLE.issubset(pressed) and Flag == 0:
-            Flag = 1
-            print("[Copy ENABLED]")
-        
-        if HOTKEY_DISABLE.issubset(pressed) and Flag == 1:
-            Flag = 0
-            print("[Copy DISABLED]")
-    except:
-        pass
-
-def on_release(key):
-    """Handle key release."""
-    try:
-        pressed.discard(key)
-    except:
-        pass
-
 def main():
-    """Main OCR loop."""
+    """Main OCR loop - runs until Ctrl+C"""
     global running, Flag
     
     print("\n=== Clipboard OCR ===\n")
@@ -179,19 +140,12 @@ def main():
         print("Exiting.")
         return
 
-    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-    listener.start()
-
     last_copied = ""
     frame_count = 0
     error_count = 0
 
-    print("\nRunning. Hotkeys:")
-    print("  Cmd+Shift+R - Reselect")
-    print("  Cmd+Shift+Q - Quit")
-    print("  Cmd+F9 - Enable copy")
-    print("  Cmd+F10 - Disable copy")
-    print(f"Copy is: {'ON' if Flag == 1 else 'OFF'}\n")
+    print("\nRunning OCR...")
+    print("Press Ctrl+C to stop\n")
 
     try:
         while running:
@@ -219,14 +173,13 @@ def main():
                 if DEBUG and frame_count % 20 == 0:
                     print(f"[{frame_count}] {'Text: ' + text if text else 'No text'}")
                 
-                if Flag == 1:
-                    if text and text != last_copied:
-                        try:
-                            pyperclip.copy(text)
-                            last_copied = text
-                            print(f"[COPIED] {text}")
-                        except:
-                            pass
+                if text and text != last_copied:
+                    try:
+                        pyperclip.copy(text)
+                        last_copied = text
+                        print(f"[COPIED] {text}")
+                    except:
+                        pass
                 
                 time.sleep(0.2)
                 
@@ -238,9 +191,8 @@ def main():
                 time.sleep(0.5)
     
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print("\n\nStopped.")
     finally:
-        listener.stop()
         print("Done.")
 
 if __name__ == "__main__":
