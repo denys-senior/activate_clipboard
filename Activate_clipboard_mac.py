@@ -2,12 +2,13 @@
 import os
 import sys
 
-# Disable CPU optimizations to prevent crashes
+# Set these BEFORE importing numpy/cv2 to prevent illegal instruction crashes
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['MKL_NUM_THREADS'] = '1'
 os.environ['NUMEXPR_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['PYTHONHASHSEED'] = '0'
+os.environ['DYLD_LIBRARY_PATH'] = '/usr/local/lib'
 
 import time
 import cv2
@@ -19,7 +20,7 @@ import platform
 import subprocess
 from pynput import keyboard
 
-# macOS Tesseract path
+# Tesseract path
 import shutil
 tesseract_path = shutil.which("tesseract")
 if tesseract_path:
@@ -39,31 +40,25 @@ running = True
 DEBUG = True
 Flag = 1
 
-def check_architecture():
-    """Verify Python and dependencies."""
-    print(f"Python architecture: {platform.machine()}")
-    print(f"Python version: {platform.python_version()}")
+def check_setup():
+    """Verify system setup."""
+    print(f"Python: {platform.python_version()} ({platform.machine()})")
     try:
-        result = subprocess.run(["file", tesseract_path or "/usr/local/bin/tesseract"], 
+        result = subprocess.run(["file", pytesseract.pytesseract.tesseract_cmd], 
                               capture_output=True, text=True, timeout=5)
         print(f"Tesseract: {result.stdout.strip()}")
     except:
-        pass
+        print("Tesseract: /usr/local/bin/tesseract")
 
 def select_roi():
-    """Use cv2.selectROI to let user draw rectangle."""
+    """Select region with cv2.selectROI."""
     try:
-        print("\nCapturing screen for region selection...")
-        # Grab full screen using PIL
+        print("\nCapturing screen...")
         img_pil = ImageGrab.grab()
         img_array = np.array(img_pil)
-        
-        # Convert RGB to BGR for cv2
         img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
         
-        print("Draw a rectangle around the text area you want to capture.")
-        print("Press ENTER to confirm, ESC to cancel")
-        
+        print("Draw rectangle around text. Press ENTER to confirm, ESC to cancel.")
         r = cv2.selectROI("Select region", img_bgr, showCrosshair=True, fromCenter=False)
         cv2.destroyAllWindows()
         
@@ -73,11 +68,11 @@ def select_roi():
         
         return {"left": x, "top": y, "width": w, "height": h}
     except Exception as e:
-        print(f"Error selecting ROI: {e}")
+        print(f"Error: {e}")
         return None
 
 def grab_region(rect):
-    """Grab screenshot from region using PIL."""
+    """Grab region from screen."""
     try:
         bbox = (rect["left"], rect["top"], 
                 rect["left"] + rect["width"], 
@@ -85,34 +80,27 @@ def grab_region(rect):
         img = ImageGrab.grab(bbox=bbox)
         return np.array(img)
     except Exception as e:
-        print(f"Error grabbing region: {e}")
         return None
 
-def preprocess_image(img_array):
-    """Process image using PIL (stable)."""
+def preprocess(img_array):
+    """Convert image to grayscale and threshold."""
     try:
         if img_array is None or img_array.size == 0:
             return None
         
-        # Convert to PIL Image
         if len(img_array.shape) == 3 and img_array.shape[2] == 3:
             pil_img = Image.fromarray(img_array, mode='RGB')
         else:
             pil_img = Image.fromarray(img_array)
         
-        # Convert to grayscale
         pil_gray = pil_img.convert('L')
-        
-        # Apply threshold
         pil_bw = pil_gray.point(lambda x: 255 if x > 127 else 0, '1')
-        
         return np.array(pil_bw)
     except Exception as e:
-        print(f"Preprocessing error: {e}")
         return None
 
 def normalize_text(t):
-    """Normalize OCR text."""
+    """Clean up text."""
     try:
         t = t.replace('\x0c', ' ').strip()
         return ' '.join(t.split())
@@ -120,7 +108,7 @@ def normalize_text(t):
         return ""
 
 def ocr_image(img):
-    """Run OCR with error handling."""
+    """Run OCR."""
     if img is None:
         return ""
     try:
@@ -130,26 +118,23 @@ def ocr_image(img):
     except pytesseract.TesseractNotFoundError:
         print("ERROR: Tesseract not found. Install: brew install tesseract")
         return ""
-    except Exception as e:
+    except:
         return ""
 
 def reselect():
-    """Reselect ROI using cv2.selectROI."""
+    """Reselect ROI."""
     global monitor
     try:
         m = select_roi()
         if not m:
             if monitor:
-                print("Selection canceled. Keeping previous region.")
+                print("Keeping previous region.")
                 return True
-            else:
-                print("No region selected.")
-                return False
+            return False
         monitor = m
-        print(f"Region selected: {monitor}")
+        print(f"Selected: {monitor}")
         return True
-    except Exception as e:
-        print(f"Error during reselection: {e}")
+    except:
         return bool(monitor)
 
 def on_press(key):
@@ -159,20 +144,20 @@ def on_press(key):
         pressed.add(key)
         
         if HOTKEY_RESELECT.issubset(pressed):
-            print("\n[Hotkey] Reselect region...")
+            print("\n[Reselect]")
             reselect()
         
         if HOTKEY_QUIT.issubset(pressed):
-            print("\n[Hotkey] Quit requested.")
+            print("\n[Quit]")
             running = False
         
         if HOTKEY_ENABLE.issubset(pressed) and Flag == 0:
             Flag = 1
-            print("[Hotkey] Clipboard copying ENABLED")
+            print("[Copy ENABLED]")
         
         if HOTKEY_DISABLE.issubset(pressed) and Flag == 1:
             Flag = 0
-            print("[Hotkey] Clipboard copying DISABLED")
+            print("[Copy DISABLED]")
     except:
         pass
 
@@ -187,12 +172,11 @@ def main():
     """Main OCR loop."""
     global running, Flag
     
-    print("\n=== Clipboard OCR Launcher ===")
-    print("(Using PIL for screen capture - stable)\n")
-    check_architecture()
+    print("\n=== Clipboard OCR ===\n")
+    check_setup()
     
     if not reselect():
-        print("No region selected. Exiting.")
+        print("Exiting.")
         return
 
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
@@ -200,76 +184,64 @@ def main():
 
     last_copied = ""
     frame_count = 0
-    consecutive_errors = 0
+    error_count = 0
 
-    print("\nOCR running. Hotkeys (macOS):")
-    print("  Cmd+Shift+R - Reselect region")
+    print("\nRunning. Hotkeys:")
+    print("  Cmd+Shift+R - Reselect")
     print("  Cmd+Shift+Q - Quit")
-    print("  Cmd+F9      - Enable clipboard copying")
-    print("  Cmd+F10     - Disable clipboard copying")
-    print(f"Clipboard copying is currently: {'ENABLED' if Flag == 1 else 'DISABLED'}\n")
+    print("  Cmd+F9 - Enable copy")
+    print("  Cmd+F10 - Disable copy")
+    print(f"Copy is: {'ON' if Flag == 1 else 'OFF'}\n")
 
     try:
         while running:
             try:
-                # Grab screenshot using PIL (no mss)
                 frame = grab_region(monitor)
-                
                 if frame is None or frame.size == 0:
-                    consecutive_errors += 1
+                    error_count += 1
                     time.sleep(0.5)
                     continue
                 
-                # Process image
-                proc = preprocess_image(frame)
+                proc = preprocess(frame)
                 if proc is None:
-                    consecutive_errors += 1
-                    if consecutive_errors > 15:
-                        print("Too many errors. Reselecting region...")
+                    error_count += 1
+                    if error_count > 20:
+                        print("Too many errors. Reselecting...")
                         reselect()
-                        consecutive_errors = 0
+                        error_count = 0
                     time.sleep(0.5)
                     continue
                 
-                # Run OCR
                 text = normalize_text(ocr_image(proc))
-                consecutive_errors = 0
-                
+                error_count = 0
                 frame_count += 1
                 
-                # Debug output every 15 frames
-                if DEBUG and frame_count % 15 == 0:
-                    status = f"'{text}'" if text else "No text"
-                    print(f"[Frame {frame_count}] {status} | Flag={Flag}")
+                if DEBUG and frame_count % 20 == 0:
+                    print(f"[{frame_count}] {'Text: ' + text if text else 'No text'}")
                 
-                # Copy to clipboard
                 if Flag == 1:
                     if text and text != last_copied:
                         try:
                             pyperclip.copy(text)
                             last_copied = text
                             print(f"[COPIED] {text}")
-                        except Exception as e:
-                            print(f"Clipboard error: {e}")
+                        except:
+                            pass
                 
                 time.sleep(0.2)
                 
             except Exception as e:
-                consecutive_errors += 1
-                if consecutive_errors <= 2:
-                    print(f"Processing error: {type(e).__name__}")
-                if consecutive_errors > 15:
+                error_count += 1
+                if error_count > 20:
                     print("Too many errors. Stopping.")
                     break
                 time.sleep(0.5)
     
     except KeyboardInterrupt:
-        print("\nStopped by user.")
-    except Exception as e:
-        print(f"Fatal error: {e}")
+        print("\nStopped.")
     finally:
         listener.stop()
-        print("Exiting.")
+        print("Done.")
 
 if __name__ == "__main__":
     main()
