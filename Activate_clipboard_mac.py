@@ -211,15 +211,52 @@ def preprocess(pil_img):
     return final
 
 
-def capture_region(region):
-    """Capture the specified screen region"""
+def get_display_scale_factor():
+    """Get the Retina display scale factor on macOS"""
     try:
-        box = (
-            region['left'],
-            region['top'],
-            region['left'] + region['width'],
-            region['top'] + region['height']
+        import subprocess
+        result = subprocess.run(
+            ['python3', '-c', 'from Quartz import CGDisplayScreenSize; from Quartz import CGMainDisplayID; '
+             'disp = CGMainDisplayID(); size = CGDisplayScreenSize(disp); print(size.width)'],
+            capture_output=True, text=True, timeout=2
         )
+        if result.returncode == 0 and result.stdout.strip():
+            # Get actual display size and compare with reported size
+            # If reporting is 2x larger, it's Retina
+            physical_width = float(result.stdout.strip())
+            # Simple heuristic: if screen is reported as 2880 but should be 1440, scale is 2
+            # For now, detect based on screen size
+            screen = ImageGrab.grab()
+            if screen.size[0] >= 2560:  # Likely Retina
+                return 2.0
+        return 1.0
+    except Exception as e:
+        print(f"[DISPLAY] Scale detection failed: {e}, assuming 1.0")
+        return 1.0
+
+
+def capture_region(region):
+    """Capture the specified screen region, handling Retina display scaling"""
+    try:
+        # Detect if Retina display and scale coordinates accordingly
+        # On Retina, cv2.selectROI returns physical pixels, but screencapture expects logical pixels
+        scale = 1.0
+
+        # Check if this is likely a Retina display
+        img_test = ImageGrab.grab()
+        if img_test.size[0] >= 2560:
+            scale = 2.0
+            print(f"[CAPTURE] Retina display detected, using scale {scale}")
+
+        # Scale coordinates down for screencapture
+        left = int(region['left'] / scale)
+        top = int(region['top'] / scale)
+        width = int(region['width'] / scale)
+        height = int(region['height'] / scale)
+
+        box = (left, top, left + width, top + height)
+        print(f"[CAPTURE] Scaled region: {box} (scale factor: {scale})")
+
         captured = ImageGrab.grab(bbox=box)
         return captured
     except Exception as e:
