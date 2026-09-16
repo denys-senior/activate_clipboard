@@ -30,7 +30,7 @@ Flag = 1  # Start with clipboard copying enabled
 
 def choose_monitor_index():
     """Prompt user to choose a display when multiple monitors exist; return index in sct.monitors."""
-    with mss.mss() as sct:
+    with mss.MSS() as sct:
         monitors = sct.monitors  # [0] is virtual bounding box; [1..N] are real displays
         count_real = len(monitors) - 1
         if count_real <= 1:
@@ -51,7 +51,7 @@ def choose_monitor_index():
 
 def select_roi():
     """Let user choose a display, then drag a rectangle; return absolute mss monitor dict."""
-    with mss.mss() as sct:
+    with mss.MSS() as sct:
         idx = choose_monitor_index()
         base = sct.monitors[idx]
         scr = sct.grab(base)
@@ -140,7 +140,7 @@ def main():
     last_copied = ""
     frame_count = 0
 
-    with mss.mss() as sct:
+    with mss.MSS() as sct:
         print("OCR running. Hotkeys (macOS):")
         print("  Cmd+Shift+R - Reselect region")
         print("  Cmd+Shift+Q - Quit")
