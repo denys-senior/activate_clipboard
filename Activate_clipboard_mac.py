@@ -30,7 +30,6 @@ else:
 monitor = None
 running = True
 DEBUG = True
-Flag = 1
 
 def check_setup():
     """Verify system setup."""
@@ -42,26 +41,109 @@ def check_setup():
     except:
         print("Tesseract: /usr/local/bin/tesseract")
 
-def select_roi():
-    """Select region with cv2.selectROI."""
+def test_imagegrab():
+    """Test if ImageGrab works."""
     try:
-        print("\nCapturing screen...")
-        img_pil = ImageGrab.grab()
-        img_array = np.array(img_pil)
-        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        print("Testing ImageGrab...", end=" ")
+        img = ImageGrab.grab()
+        print(f"OK ({img.width}x{img.height})")
+        return True
+    except Exception as e:
+        print(f"FAILED: {e}")
+        return False
+
+def test_cv2():
+    """Test if cv2 works."""
+    try:
+        print("Testing cv2...", end=" ")
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        result = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        print("OK")
+        return True
+    except Exception as e:
+        print(f"FAILED: {e}")
+        return False
+
+def manual_select_roi():
+    """Manual coordinate input for ROI."""
+    print("\n=== Manual ROI Selection ===")
+    print("Enter coordinates for the region to capture:")
+    try:
+        left = int(input("LEFT (x): "))
+        top = int(input("TOP (y): "))
+        width = int(input("WIDTH: "))
+        height = int(input("HEIGHT: "))
         
-        print("Draw rectangle around text. Press ENTER to confirm, ESC to cancel.")
+        if width <= 0 or height <= 0:
+            print("Width and height must be positive.")
+            return None
+        
+        return {"left": left, "top": top, "width": width, "height": height}
+    except ValueError:
+        print("Invalid input. Please enter numbers only.")
+        return None
+
+def select_roi_cv2():
+    """Use cv2.selectROI to select region."""
+    try:
+        print("\nCapturing screen...", end=" ")
+        img_pil = ImageGrab.grab()
+        print("OK")
+        
+        print("Converting to numpy...", end=" ")
+        img_array = np.array(img_pil)
+        print("OK")
+        
+        print("Converting RGB to BGR...", end=" ")
+        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        print("OK")
+        
+        print("Opening selection window...")
+        print("Draw rectangle and press ENTER to confirm, ESC to cancel")
+        print("(Window may take a few seconds to appear)")
+        
+        # Set a timeout for selectROI
+        start_time = time.time()
+        timeout = 60  # 60 second timeout
+        
         r = cv2.selectROI("Select region", img_bgr, showCrosshair=True, fromCenter=False)
         cv2.destroyAllWindows()
         
         x, y, w, h = map(int, r)
         if w == 0 or h == 0:
+            print("No region selected.")
             return None
         
         return {"left": x, "top": y, "width": w, "height": h}
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"ERROR: {type(e).__name__}: {e}")
+        print("cv2.selectROI failed. Falling back to manual input.")
         return None
+
+def select_roi():
+    """Select region - try cv2 first, fallback to manual."""
+    global monitor
+    
+    print("\n=== Region Selection ===")
+    
+    # Try cv2 first
+    m = select_roi_cv2()
+    
+    # If cv2 fails, use manual input
+    if not m:
+        print("\nTrying manual coordinate input instead...")
+        m = manual_select_roi()
+    
+    if not m:
+        if monitor:
+            print("Using previous region.")
+            return True
+        print("No region selected.")
+        return False
+    
+    monitor = m
+    print(f"\nSelected: {monitor}")
+    return True
 
 def grab_region(rect):
     """Grab region from screen."""
@@ -113,30 +195,23 @@ def ocr_image(img):
     except:
         return ""
 
-def reselect():
-    """Reselect ROI."""
-    global monitor
-    try:
-        m = select_roi()
-        if not m:
-            if monitor:
-                print("Keeping previous region.")
-                return True
-            return False
-        monitor = m
-        print(f"Selected: {monitor}")
-        return True
-    except:
-        return bool(monitor)
-
 def main():
-    """Main OCR loop - runs until Ctrl+C"""
-    global running, Flag
+    """Main OCR loop."""
+    global running
     
     print("\n=== Clipboard OCR ===\n")
     check_setup()
     
-    if not reselect():
+    print("\n=== Testing Components ===")
+    if not test_imagegrab():
+        print("Cannot capture screen. Exiting.")
+        return
+    
+    if not test_cv2():
+        print("cv2 is broken. Exiting.")
+        return
+    
+    if not select_roi():
         print("Exiting.")
         return
 
@@ -161,7 +236,7 @@ def main():
                     error_count += 1
                     if error_count > 20:
                         print("Too many errors. Reselecting...")
-                        reselect()
+                        select_roi()
                         error_count = 0
                     time.sleep(0.5)
                     continue
