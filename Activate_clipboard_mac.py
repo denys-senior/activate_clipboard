@@ -1,10 +1,20 @@
+#!/usr/bin/env python3
+import os
+import sys
+
+# Disable CPU optimizations to prevent crashes
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['PYTHONHASHSEED'] = '0'
+
 import time
 import cv2
 import numpy as np
-import mss
 import pytesseract
 import pyperclip
-from PIL import Image
+from PIL import Image, ImageGrab
 import platform
 import subprocess
 from pynput import keyboard
@@ -40,75 +50,55 @@ def check_architecture():
     except:
         pass
 
-def choose_monitor_index():
-    """Prompt user to choose a display."""
-    try:
-        with mss.MSS() as sct:
-            monitors = sct.monitors
-            count_real = len(monitors) - 1
-            if count_real <= 1:
-                return 1
-            print("\nAvailable displays:")
-            for i in range(1, len(monitors)):
-                mon = monitors[i]
-                print(f"  {i}: {mon['width']}x{mon['height']} @ ({mon['left']},{mon['top']})")
-        while True:
-            sel = input(f"Select display [1-{count_real}] (Enter=1): ").strip()
-            if sel == "":
-                return 1
-            if sel.isdigit():
-                idx = int(sel)
-                if 1 <= idx <= count_real:
-                    return idx
-            print("Invalid selection. Try again.")
-    except Exception as e:
-        print(f"Error: {e}")
-        return 1
-
 def select_roi():
     """Use cv2.selectROI to let user draw rectangle."""
     try:
-        with mss.MSS() as sct:
-            idx = choose_monitor_index()
-            base = sct.monitors[idx]
-            
-            # Grab screenshot
-            scr = sct.grab(base)
-            img = np.array(scr)[:, :, :3]  # BGRA to BGR
-            
-            print("\nDraw a rectangle around the text area you want to capture.")
-            print("Press ENTER to confirm, ESC to cancel")
-            
-            # Use cv2.selectROI for region selection
-            r = cv2.selectROI("Select region", img, showCrosshair=True, fromCenter=False)
-            cv2.destroyAllWindows()
-            
-            x, y, w, h = map(int, r)
-            if w == 0 or h == 0:
-                return None
-            
-            # Convert to absolute coordinates
-            return {"left": base["left"] + x, "top": base["top"] + y, "width": w, "height": h}
+        print("\nCapturing screen for region selection...")
+        # Grab full screen using PIL
+        img_pil = ImageGrab.grab()
+        img_array = np.array(img_pil)
+        
+        # Convert RGB to BGR for cv2
+        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        
+        print("Draw a rectangle around the text area you want to capture.")
+        print("Press ENTER to confirm, ESC to cancel")
+        
+        r = cv2.selectROI("Select region", img_bgr, showCrosshair=True, fromCenter=False)
+        cv2.destroyAllWindows()
+        
+        x, y, w, h = map(int, r)
+        if w == 0 or h == 0:
+            return None
+        
+        return {"left": x, "top": y, "width": w, "height": h}
     except Exception as e:
         print(f"Error selecting ROI: {e}")
         return None
 
-def preprocess_image(frame_bgra):
-    """
-    Process image using PIL (more stable than cv2).
-    Convert to grayscale and apply threshold.
-    """
+def grab_region(rect):
+    """Grab screenshot from region using PIL."""
     try:
-        if frame_bgra is None or frame_bgra.size == 0:
+        bbox = (rect["left"], rect["top"], 
+                rect["left"] + rect["width"], 
+                rect["top"] + rect["height"])
+        img = ImageGrab.grab(bbox=bbox)
+        return np.array(img)
+    except Exception as e:
+        print(f"Error grabbing region: {e}")
+        return None
+
+def preprocess_image(img_array):
+    """Process image using PIL (stable)."""
+    try:
+        if img_array is None or img_array.size == 0:
             return None
         
-        # Convert numpy array to PIL Image
-        if len(frame_bgra.shape) == 3 and frame_bgra.shape[2] == 4:
-            # BGRA to RGB
-            img_rgb = frame_bgra[:, :, ::-1][:, :, 1:]  # Remove alpha, reverse BGR
-            pil_img = Image.fromarray(frame_bgra[:, :, :3], mode='RGB')
+        # Convert to PIL Image
+        if len(img_array.shape) == 3 and img_array.shape[2] == 3:
+            pil_img = Image.fromarray(img_array, mode='RGB')
         else:
-            pil_img = Image.fromarray(frame_bgra)
+            pil_img = Image.fromarray(img_array)
         
         # Convert to grayscale
         pil_gray = pil_img.convert('L')
@@ -116,9 +106,7 @@ def preprocess_image(frame_bgra):
         # Apply threshold
         pil_bw = pil_gray.point(lambda x: 255 if x > 127 else 0, '1')
         
-        # Convert back to numpy for pytesseract
-        img_array = np.array(pil_bw)
-        return img_array
+        return np.array(pil_bw)
     except Exception as e:
         print(f"Preprocessing error: {e}")
         return None
@@ -200,6 +188,7 @@ def main():
     global running, Flag
     
     print("\n=== Clipboard OCR Launcher ===")
+    print("(Using PIL for screen capture - stable)\n")
     check_architecture()
     
     if not reselect():
@@ -221,64 +210,58 @@ def main():
     print(f"Clipboard copying is currently: {'ENABLED' if Flag == 1 else 'DISABLED'}\n")
 
     try:
-        with mss.MSS() as sct:
-            while running:
-                try:
-                    # Grab screenshot
-                    frame = np.array(sct.grab(monitor), dtype=np.uint8)
-                    
-                    if frame is None or frame.size == 0:
-                        consecutive_errors += 1
-                        time.sleep(0.5)
-                        continue
-                    
-                    # Process image using PIL (stable)
-                    proc = preprocess_image(frame)
-                    if proc is None:
-                        consecutive_errors += 1
-                        if consecutive_errors > 15:
-                            print("Too many errors. Reselecting region...")
-                            reselect()
-                            consecutive_errors = 0
-                        time.sleep(0.5)
-                        continue
-                    
-                    # Run OCR
-                    text = normalize_text(ocr_image(proc))
-                    consecutive_errors = 0
-                    
-                    frame_count += 1
-                    
-                    # Debug output every 15 frames
-                    if DEBUG and frame_count % 15 == 0:
-                        status = f"'{text}'" if text else "No text"
-                        print(f"[Frame {frame_count}] {status} | Flag={Flag}")
-                    
-                    # Copy to clipboard
-                    if Flag == 1:
-                        if text and text != last_copied:
-                            try:
-                                pyperclip.copy(text)
-                                last_copied = text
-                                print(f"[COPIED] {text}")
-                            except Exception as e:
-                                print(f"Clipboard error: {e}")
-                    
-                    time.sleep(0.2)
-                    
-                except mss.exception.ScreenShotError:
-                    print("Display changed. Please reselect.")
-                    if not reselect():
-                        break
-                    time.sleep(1)
-                except Exception as e:
+        while running:
+            try:
+                # Grab screenshot using PIL (no mss)
+                frame = grab_region(monitor)
+                
+                if frame is None or frame.size == 0:
                     consecutive_errors += 1
-                    if consecutive_errors <= 2:
-                        print(f"Processing error: {type(e).__name__}")
-                    if consecutive_errors > 15:
-                        print("Too many errors. Stopping.")
-                        break
                     time.sleep(0.5)
+                    continue
+                
+                # Process image
+                proc = preprocess_image(frame)
+                if proc is None:
+                    consecutive_errors += 1
+                    if consecutive_errors > 15:
+                        print("Too many errors. Reselecting region...")
+                        reselect()
+                        consecutive_errors = 0
+                    time.sleep(0.5)
+                    continue
+                
+                # Run OCR
+                text = normalize_text(ocr_image(proc))
+                consecutive_errors = 0
+                
+                frame_count += 1
+                
+                # Debug output every 15 frames
+                if DEBUG and frame_count % 15 == 0:
+                    status = f"'{text}'" if text else "No text"
+                    print(f"[Frame {frame_count}] {status} | Flag={Flag}")
+                
+                # Copy to clipboard
+                if Flag == 1:
+                    if text and text != last_copied:
+                        try:
+                            pyperclip.copy(text)
+                            last_copied = text
+                            print(f"[COPIED] {text}")
+                        except Exception as e:
+                            print(f"Clipboard error: {e}")
+                
+                time.sleep(0.2)
+                
+            except Exception as e:
+                consecutive_errors += 1
+                if consecutive_errors <= 2:
+                    print(f"Processing error: {type(e).__name__}")
+                if consecutive_errors > 15:
+                    print("Too many errors. Stopping.")
+                    break
+                time.sleep(0.5)
     
     except KeyboardInterrupt:
         print("\nStopped by user.")
