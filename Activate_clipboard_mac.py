@@ -4,9 +4,9 @@ import numpy as np
 import mss
 import pytesseract
 import pyperclip
+from PIL import Image
 import platform
 import subprocess
-import sys
 from pynput import keyboard
 
 # macOS Tesseract path
@@ -30,15 +30,15 @@ DEBUG = True
 Flag = 1
 
 def check_architecture():
-    """Verify Python and Tesseract architectures."""
+    """Verify Python and dependencies."""
     print(f"Python architecture: {platform.machine()}")
     print(f"Python version: {platform.python_version()}")
     try:
         result = subprocess.run(["file", tesseract_path or "/usr/local/bin/tesseract"], 
                               capture_output=True, text=True, timeout=5)
         print(f"Tesseract: {result.stdout.strip()}")
-    except Exception as e:
-        print(f"Could not check Tesseract: {e}")
+    except:
+        pass
 
 def choose_monitor_index():
     """Prompt user to choose a display."""
@@ -62,70 +62,63 @@ def choose_monitor_index():
                     return idx
             print("Invalid selection. Try again.")
     except Exception as e:
-        print(f"Error selecting monitor: {e}. Using display 1.")
+        print(f"Error: {e}")
         return 1
 
-def input_roi_coordinates():
-    """Get ROI coordinates from user input instead of GUI."""
-    print("\n=== Manual ROI Selection ===")
-    print("First, take a screenshot to see coordinate ranges.")
-    print("You can use macOS screencapture or just estimate from your screen.")
-    
-    try:
-        left = int(input("Enter LEFT coordinate (x): "))
-        top = int(input("Enter TOP coordinate (y): "))
-        width = int(input("Enter WIDTH: "))
-        height = int(input("Enter HEIGHT: "))
-        
-        if width <= 0 or height <= 0:
-            print("Width and height must be positive.")
-            return None
-        
-        return {"left": left, "top": top, "width": width, "height": height}
-    except ValueError:
-        print("Invalid input. Please enter numbers only.")
-        return None
-
 def select_roi():
-    """Get ROI from user input - no GUI to avoid crashes."""
+    """Use cv2.selectROI to let user draw rectangle."""
     try:
-        idx = choose_monitor_index()
         with mss.MSS() as sct:
+            idx = choose_monitor_index()
             base = sct.monitors[idx]
-            print(f"\nDisplay {idx} bounds: left={base['left']}, top={base['top']}, "
-                  f"width={base['width']}, height={base['height']}")
-        
-        m = input_roi_coordinates()
-        if not m:
-            return None
-        
-        return m
+            
+            # Grab screenshot
+            scr = sct.grab(base)
+            img = np.array(scr)[:, :, :3]  # BGRA to BGR
+            
+            print("\nDraw a rectangle around the text area you want to capture.")
+            print("Press ENTER to confirm, ESC to cancel")
+            
+            # Use cv2.selectROI for region selection
+            r = cv2.selectROI("Select region", img, showCrosshair=True, fromCenter=False)
+            cv2.destroyAllWindows()
+            
+            x, y, w, h = map(int, r)
+            if w == 0 or h == 0:
+                return None
+            
+            # Convert to absolute coordinates
+            return {"left": base["left"] + x, "top": base["top"] + y, "width": w, "height": h}
     except Exception as e:
         print(f"Error selecting ROI: {e}")
         return None
 
-def preprocess(frame_bgra):
-    """Minimal preprocessing - avoid heavy OpenCV operations."""
+def preprocess_image(frame_bgra):
+    """
+    Process image using PIL (more stable than cv2).
+    Convert to grayscale and apply threshold.
+    """
     try:
         if frame_bgra is None or frame_bgra.size == 0:
             return None
         
-        # Minimal processing to avoid crashes
+        # Convert numpy array to PIL Image
         if len(frame_bgra.shape) == 3 and frame_bgra.shape[2] == 4:
-            # BGRA to BGR
-            frame_bgr = frame_bgra[:, :, :3]
+            # BGRA to RGB
+            img_rgb = frame_bgra[:, :, ::-1][:, :, 1:]  # Remove alpha, reverse BGR
+            pil_img = Image.fromarray(frame_bgra[:, :, :3], mode='RGB')
         else:
-            frame_bgr = frame_bgra
+            pil_img = Image.fromarray(frame_bgra)
         
         # Convert to grayscale
-        if len(frame_bgr.shape) == 3:
-            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = frame_bgr
+        pil_gray = pil_img.convert('L')
         
-        # Simple threshold (avoid OTSU which can be slow)
-        _, thr = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-        return thr
+        # Apply threshold
+        pil_bw = pil_gray.point(lambda x: 255 if x > 127 else 0, '1')
+        
+        # Convert back to numpy for pytesseract
+        img_array = np.array(pil_bw)
+        return img_array
     except Exception as e:
         print(f"Preprocessing error: {e}")
         return None
@@ -153,7 +146,7 @@ def ocr_image(img):
         return ""
 
 def reselect():
-    """Reselect ROI."""
+    """Reselect ROI using cv2.selectROI."""
     global monitor
     try:
         m = select_roi()
@@ -192,7 +185,7 @@ def on_press(key):
         if HOTKEY_DISABLE.issubset(pressed) and Flag == 1:
             Flag = 0
             print("[Hotkey] Clipboard copying DISABLED")
-    except Exception as e:
+    except:
         pass
 
 def on_release(key):
@@ -208,7 +201,6 @@ def main():
     
     print("\n=== Clipboard OCR Launcher ===")
     check_architecture()
-    print("\nNote: Using manual coordinate input instead of GUI to avoid crashes.\n")
     
     if not reselect():
         print("No region selected. Exiting.")
@@ -220,7 +212,6 @@ def main():
     last_copied = ""
     frame_count = 0
     consecutive_errors = 0
-    error_limit = 20
 
     print("\nOCR running. Hotkeys (macOS):")
     print("  Cmd+Shift+R - Reselect region")
@@ -234,24 +225,18 @@ def main():
             while running:
                 try:
                     # Grab screenshot
-                    try:
-                        frame = np.array(sct.grab(monitor), dtype=np.uint8)
-                    except Exception as e:
-                        print(f"Screenshot error: {e}. Reselect region.")
-                        if not reselect():
-                            break
-                        continue
+                    frame = np.array(sct.grab(monitor), dtype=np.uint8)
                     
                     if frame is None or frame.size == 0:
                         consecutive_errors += 1
                         time.sleep(0.5)
                         continue
                     
-                    # Process image
-                    proc = preprocess(frame)
+                    # Process image using PIL (stable)
+                    proc = preprocess_image(frame)
                     if proc is None:
                         consecutive_errors += 1
-                        if consecutive_errors > error_limit:
+                        if consecutive_errors > 15:
                             print("Too many errors. Reselecting region...")
                             reselect()
                             consecutive_errors = 0
@@ -264,9 +249,9 @@ def main():
                     
                     frame_count += 1
                     
-                    # Debug output
-                    if DEBUG and frame_count % 20 == 0:
-                        status = f"Text: '{text}'" if text else "No text"
+                    # Debug output every 15 frames
+                    if DEBUG and frame_count % 15 == 0:
+                        status = f"'{text}'" if text else "No text"
                         print(f"[Frame {frame_count}] {status} | Flag={Flag}")
                     
                     # Copy to clipboard
@@ -281,23 +266,27 @@ def main():
                     
                     time.sleep(0.2)
                     
+                except mss.exception.ScreenShotError:
+                    print("Display changed. Please reselect.")
+                    if not reselect():
+                        break
+                    time.sleep(1)
                 except Exception as e:
                     consecutive_errors += 1
-                    if consecutive_errors == 1:
-                        print(f"Error: {type(e).__name__}: {e}")
-                    if consecutive_errors > error_limit:
-                        print(f"Too many errors ({consecutive_errors}). Stopping.")
+                    if consecutive_errors <= 2:
+                        print(f"Processing error: {type(e).__name__}")
+                    if consecutive_errors > 15:
+                        print("Too many errors. Stopping.")
                         break
                     time.sleep(0.5)
     
     except KeyboardInterrupt:
-        print("\nKeyboard interrupt.")
+        print("\nStopped by user.")
     except Exception as e:
         print(f"Fatal error: {e}")
     finally:
         listener.stop()
-        print("Stopped.")
-        sys.exit(0)
+        print("Exiting.")
 
 if __name__ == "__main__":
     main()
