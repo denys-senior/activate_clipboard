@@ -172,33 +172,43 @@ def preprocess(pil_img):
     gray_img = pil_img.convert('L')
     gray_array = np.array(gray_img)
 
-    # Step 1: Enhance contrast to make text stand out
-    # Apply histogram equalization
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray_array)
+    # Step 1: Apply bilateral filter to reduce noise while preserving edges
+    bilateral = cv2.bilateralFilter(gray_array, 9, 75, 75)
 
-    # Step 2: Denoise
-    denoised = cv2.medianBlur(enhanced, 3)
+    # Step 2: Enhance contrast using CLAHE
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(10, 10))
+    enhanced = clahe.apply(bilateral)
 
-    # Step 3: Adaptive thresholding instead of fixed threshold
-    # This adjusts threshold locally, better for varying lighting conditions
-    binary = cv2.adaptiveThreshold(
-        denoised,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        11,  # Block size (must be odd)
-        2    # Constant subtracted from mean
-    )
+    # Step 3: Apply Otsu's thresholding (automatic) instead of adaptive
+    # Otsu's method finds the optimal threshold automatically
+    _, otsu_binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Step 4: Optional: Apply morphological operations to clean up
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    morph = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
+    # Step 4: Morphological operations to clean up
+    # Dilate to connect broken strokes
+    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+    dilated = cv2.dilate(otsu_binary, kernel_dilate, iterations=1)
 
-    print(f"[PREPROCESS] Input shape: {gray_array.shape}, Output shape: {morph.shape}")
-    print(f"[PREPROCESS] Pixel range: min={morph.min()}, max={morph.max()}, mean={morph.mean():.1f}")
+    # Erode to remove noise but keep text
+    kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+    eroded = cv2.erode(dilated, kernel_erode, iterations=1)
 
-    return morph
+    # Step 5: Invert if needed (text should be black on white for Tesseract)
+    # Check if image is mostly white or mostly black
+    white_pixels = np.sum(eroded > 127)
+    total_pixels = eroded.size
+    white_ratio = white_pixels / total_pixels
+
+    # If more than 50% white, it's likely inverted (white text on dark bg)
+    if white_ratio > 0.5:
+        final = cv2.bitwise_not(eroded)
+        print(f"[PREPROCESS] Image inverted (was {white_ratio*100:.1f}% white)")
+    else:
+        final = eroded
+
+    print(f"[PREPROCESS] Input shape: {gray_array.shape}, Output shape: {final.shape}")
+    print(f"[PREPROCESS] Pixel range: min={final.min()}, max={final.max()}, mean={final.mean():.1f}")
+
+    return final
 
 
 def capture_region(region):
@@ -231,8 +241,9 @@ def ocr_image(img_array, use_gpu=False):
 
         # Tesseract configuration
         # --oem 1: Use LSTM engine (better for modern text)
-        # --psm 6: Assume single uniform block of text
-        config = '--oem 1 --psm 6'
+        # --psm 3: Fully automatic page segmentation (works better with variable text)
+        # --dpi 72: Hint about image resolution
+        config = '--oem 1 --psm 3 --dpi 72'
 
         text = pytesseract.image_to_string(pil_img, config=config)
 
